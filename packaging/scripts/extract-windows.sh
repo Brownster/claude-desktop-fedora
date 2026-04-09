@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# extract-windows.sh — Extract app.asar and resources from the Windows installer
+# extract-windows.sh — Extract app.asar from the Windows installer and detect Electron version
+#
+# NOTE: This script does NOT produce a Linux-runnable Electron binary.
+# The Linux Electron runtime is downloaded separately in patch-linux-runtime.sh.
 #
 # Inputs:  work/upstream/Claude-<version>-x64.exe
-# Outputs: work/extracted/  (raw 7z extract)
-#          work/app/        (unpacked asar tree)
-#          work/electron/   (electron binary + runtime)
+# Outputs: work/extracted/  (raw 7z extract, Windows content — not used directly in packaging)
+#          work/app/        (unpacked asar tree, cross-platform JS)
+#          work/extract.json (metadata including detected Electron version)
 #
 # Usage: ./extract-windows.sh <version>
 # Env:   WORK_DIR
@@ -17,7 +20,6 @@ WORK_DIR="${WORK_DIR:-${REPO_ROOT}/work}"
 UPSTREAM_DIR="${WORK_DIR}/upstream"
 EXTRACT_DIR="${WORK_DIR}/extracted"
 APP_DIR="${WORK_DIR}/app"
-ELECTRON_DIR="${WORK_DIR}/electron"
 
 log()  { printf '[extract-windows] %s\n' "$*" >&2; }
 die()  { printf '[extract-windows] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -79,31 +81,37 @@ fi
 [[ -z "${ASAR_FILE}" ]] && die "Could not find app.asar in installer. Upstream structure may have changed."
 log "Found app.asar: ${ASAR_FILE}"
 
-# --- find electron binary and resources ---
 RESOURCES_DIR=$(dirname "${ASAR_FILE}")
-log "Resources directory: ${RESOURCES_DIR}"
-
-# Locate the Electron executable (may be named 'claude.exe', 'Claude.exe', or 'electron.exe')
-ELECTRON_EXE=$(find "${EXTRACT_DIR}" -name "claude.exe" -o -name "Claude.exe" 2>/dev/null | head -1 || true)
-if [[ -z "${ELECTRON_EXE}" ]]; then
-    ELECTRON_EXE=$(find "${EXTRACT_DIR}" -name "*.exe" -not -path "*/uninstall*" 2>/dev/null | head -1 || true)
-fi
-
-# Copy electron runtime files
-rm -rf "${ELECTRON_DIR}"
-mkdir -p "${ELECTRON_DIR}"
 APP_ROOT=$(dirname "${RESOURCES_DIR}")
-log "Copying Electron runtime from: ${APP_ROOT}"
-rsync -a --exclude='*.exe' --exclude='*.pdb' "${APP_ROOT}/" "${ELECTRON_DIR}/" 2>/dev/null || \
-    cp -r "${APP_ROOT}/." "${ELECTRON_DIR}/"
+log "App root: ${APP_ROOT}"
 
-# Detect Electron version from version file or binary
+# --- detect Electron version from version file ---
+# The 'version' file at the app root contains the Electron version string (e.g. "28.3.3")
 ELECTRON_VERSION=""
 VERSION_FILE=$(find "${APP_ROOT}" -name "version" -maxdepth 1 -type f 2>/dev/null | head -1 || true)
 if [[ -f "${VERSION_FILE}" ]]; then
     ELECTRON_VERSION=$(cat "${VERSION_FILE}")
-    log "Electron version: ${ELECTRON_VERSION}"
+    log "Electron version (from version file): ${ELECTRON_VERSION}"
 fi
+
+# Fallback: try to read from app package.json devDependencies
+if [[ -z "${ELECTRON_VERSION}" ]]; then
+    PKG_JSON_ROOT=$(find "${APP_ROOT}" -name "package.json" -maxdepth 1 2>/dev/null | head -1 || true)
+    if [[ -f "${PKG_JSON_ROOT}" ]]; then
+        ELECTRON_VERSION=$(python3 -c "
+import json, sys, re
+data = json.load(open('${PKG_JSON_ROOT}'))
+ev = (data.get('devDependencies', {}).get('electron', '') or
+      data.get('dependencies', {}).get('electron', ''))
+m = re.search(r'\d+\.\d+\.\d+', ev)
+print(m.group(0) if m else '')
+" 2>/dev/null || true)
+        [[ -n "${ELECTRON_VERSION}" ]] && log "Electron version (from package.json): ${ELECTRON_VERSION}"
+    fi
+fi
+
+[[ -z "${ELECTRON_VERSION}" ]] && die "Could not detect Electron version from installer. Cannot proceed without it to download the Linux runtime."
+log "Confirmed Electron version: ${ELECTRON_VERSION}"
 
 # --- unpack app.asar ---
 log "Unpacking app.asar..."
@@ -131,7 +139,6 @@ cat > "${EXTRACT_META}" <<EOF
   "asar_sha256": "${ASAR_SHA256}",
   "resources_dir": "${RESOURCES_DIR}",
   "app_dir": "${APP_DIR}",
-  "electron_dir": "${ELECTRON_DIR}",
   "electron_version": "${ELECTRON_VERSION}",
   "extracted_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

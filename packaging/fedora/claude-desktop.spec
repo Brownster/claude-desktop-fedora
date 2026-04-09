@@ -99,13 +99,13 @@ find %{buildroot}/opt/%{name} -name "*.exe" -delete 2>/dev/null || true
 find %{buildroot}/opt/%{name} -name "*.dll" -delete 2>/dev/null || true
 find %{buildroot}/opt/%{name} -name "*.pdb" -delete 2>/dev/null || true
 
-# Make the Electron binary executable and rename
-if [ -f %{buildroot}/opt/%{name}/claude ]; then
-    chmod 755 %{buildroot}/opt/%{name}/claude
-elif [ -f %{buildroot}/opt/%{name}/Claude ]; then
-    mv %{buildroot}/opt/%{name}/Claude %{buildroot}/opt/%{name}/claude
-    chmod 755 %{buildroot}/opt/%{name}/claude
+# The Electron binary is renamed to 'claude' by make-source-tarball.sh before packaging.
+# Fail explicitly here if it's missing so the build surfaces the error immediately.
+if [ ! -f %{buildroot}/opt/%{name}/claude ]; then
+    echo "ERROR: claude binary not found in tarball. The make-source-tarball.sh step must rename 'electron' -> 'claude'." >&2
+    exit 1
 fi
+chmod 755 %{buildroot}/opt/%{name}/claude
 
 # Mark setuid helper if present (needed for sandboxing)
 if [ -f %{buildroot}/opt/%{name}/chrome-sandbox ]; then
@@ -156,7 +156,8 @@ find %{buildroot}/opt/%{name}/resources -name "*.asar" -exec chmod 644 {} \;
 /usr/bin/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor &>/dev/null || true
 
 %files
-%license build-metadata.json
+%license LICENSE
+%doc build-metadata.json
 /opt/%{name}/
 %{_bindir}/claude-desktop
 %{_datadir}/applications/claude-desktop.desktop

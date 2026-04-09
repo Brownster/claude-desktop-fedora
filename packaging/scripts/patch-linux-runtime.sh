@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-# patch-linux-runtime.sh — Replace Windows native bindings with Linux-compatible ones
+# patch-linux-runtime.sh — Download Linux Electron runtime and replace Windows native modules
 #
-# Strategy (in order):
-#   1. Check patches/runtime/ for pre-staged bindings
-#   2. Download from aaddrick/claude-desktop-debian releases (known working source)
-#   3. Build from source via node-gyp (fallback)
+# This script does two distinct jobs:
 #
-# Inputs:  work/app/   (unpacked asar)
-#          work/electron/ (electron runtime)
-# Outputs: work/app-patched/  (patched app tree, ready for repacking)
+#   1. Download the official Linux Electron release matching the version bundled in
+#      the Windows installer. This produces work/electron-linux/ which IS the Linux
+#      runtime that ends up in the RPM.
 #
-# Usage: ./patch-linux-runtime.sh <version>
-# Env:   WORK_DIR, ELECTRON_VERSION, SKIP_NATIVE_PATCH
+#   2. Replace any Windows-only .node (native module) files in the unpacked app with
+#      Linux ELF equivalents. The pipeline FAILS if a module is found but no Linux
+#      replacement can be obtained — it does not silently continue with broken binaries.
+#
+# Native module replacement sources (tried in order per module):
+#   A. patches/runtime/<module-name>.node (pre-staged in repo — most reliable)
+#   B. aaddrick/claude-desktop-debian GitHub releases (matching by filename)
+#   C. npm install (last resort)
+#
+# Inputs:  work/app/        (unpacked asar from extract-windows.sh)
+#          work/extract.json (must contain electron_version)
+# Outputs: work/electron-linux/   (Linux Electron runtime — becomes /opt/claude-desktop/)
+#          work/app-patched/      (app tree with Linux .node files)
+#          work/patch-manifest.json
+#
+# Usage: ./patch-linux-runtime.sh [version]
+# Env:   WORK_DIR, ELECTRON_VERSION (override), SKIP_NATIVE_PATCH=1
 
 set -euo pipefail
 
@@ -19,231 +31,278 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORK_DIR="${WORK_DIR:-${REPO_ROOT}/work}"
 APP_DIR="${WORK_DIR}/app"
-ELECTRON_DIR="${WORK_DIR}/electron"
 PATCHED_DIR="${WORK_DIR}/app-patched"
+ELECTRON_LINUX_DIR="${WORK_DIR}/electron-linux"
 PATCHES_RUNTIME_DIR="${REPO_ROOT}/patches/runtime"
 SKIP_NATIVE_PATCH="${SKIP_NATIVE_PATCH:-0}"
-
-# Upstream reference for Linux bindings
 DEBIAN_REPO="aaddrick/claude-desktop-debian"
 
 log()  { printf '[patch-linux-runtime] %s\n' "$*" >&2; }
-warn() { printf '[patch-linux-runtime] WARN: %s\n' "$*" >&2; }
 die()  { printf '[patch-linux-runtime] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# --- args ---
+# ============================================================
+# Resolve version and Electron version
+# ============================================================
 VERSION="${1:-}"
+EXTRACT_META="${WORK_DIR}/extract.json"
+
 if [[ -z "${VERSION}" ]]; then
-    META="${WORK_DIR}/upstream.json"
-    [[ -f "${META}" ]] || die "No version argument and no upstream.json"
-    VERSION=$(grep -oP '"version":\s*"\K[^"]+' "${WORK_DIR}/upstream/upstream.json" 2>/dev/null | head -1 || \
-              grep -oP '"version":\s*"\K[^"]+' "${META}" | head -1)
+    [[ -f "${EXTRACT_META}" ]] || die "No version argument and no extract.json. Run extract-windows.sh first."
+    VERSION=$(grep -oP '"version":\s*"\K[^"]+' "${EXTRACT_META}" | head -1 || true)
 fi
-[[ -z "${VERSION}" ]] && die "Could not determine version"
-log "Version: ${VERSION}"
+[[ -z "${VERSION}" ]] && die "Could not determine app version"
+log "App version: ${VERSION}"
+
+ELECTRON_VERSION="${ELECTRON_VERSION:-}"
+if [[ -z "${ELECTRON_VERSION}" ]]; then
+    [[ -f "${EXTRACT_META}" ]] || die "extract.json not found — run extract-windows.sh first"
+    ELECTRON_VERSION=$(grep -oP '"electron_version":\s*"\K[^"]+' "${EXTRACT_META}" | head -1 || true)
+fi
+[[ -z "${ELECTRON_VERSION}" ]] && die "Electron version not found in extract.json — cannot download Linux runtime"
+log "Electron version: ${ELECTRON_VERSION}"
 
 [[ -d "${APP_DIR}" ]] || die "App dir not found: ${APP_DIR}. Run extract-windows.sh first."
 
-# --- copy to patched dir ---
-log "Creating patched copy..."
+command -v curl   >/dev/null 2>&1 || die "curl is required"
+command -v unzip  >/dev/null 2>&1 || die "unzip is required"
+command -v file   >/dev/null 2>&1 || die "file (from file-libs) is required"
+
+# ============================================================
+# STEP 1: Download Linux Electron runtime
+# ============================================================
+log "=== Step 1: Linux Electron runtime ==="
+
+ELECTRON_ZIP="${WORK_DIR}/electron-${ELECTRON_VERSION}-linux-x64.zip"
+ELECTRON_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+
+if [[ -d "${ELECTRON_LINUX_DIR}" ]] && [[ -x "${ELECTRON_LINUX_DIR}/electron" ]]; then
+    log "Linux Electron already present: ${ELECTRON_LINUX_DIR}"
+else
+    rm -rf "${ELECTRON_LINUX_DIR}"
+    mkdir -p "${ELECTRON_LINUX_DIR}"
+
+    if [[ ! -f "${ELECTRON_ZIP}" ]]; then
+        log "Downloading Linux Electron v${ELECTRON_VERSION}..."
+        log "URL: ${ELECTRON_URL}"
+        curl -L --fail --progress-bar "${ELECTRON_URL}" -o "${ELECTRON_ZIP}.tmp" || \
+            die "Failed to download Linux Electron v${ELECTRON_VERSION}.
+URL tried: ${ELECTRON_URL}
+Check that this Electron version exists at https://github.com/electron/electron/releases"
+        mv "${ELECTRON_ZIP}.tmp" "${ELECTRON_ZIP}"
+    else
+        log "Using cached Electron zip: ${ELECTRON_ZIP}"
+    fi
+
+    log "Extracting Linux Electron..."
+    unzip -q "${ELECTRON_ZIP}" -d "${ELECTRON_LINUX_DIR}" || \
+        die "Failed to extract Electron zip: ${ELECTRON_ZIP}"
+
+    # Validate the binary is actually Linux ELF x86-64
+    ELECTRON_BIN="${ELECTRON_LINUX_DIR}/electron"
+    [[ -f "${ELECTRON_BIN}" ]] || \
+        die "electron binary not found after extraction — zip may be corrupt or structure changed"
+
+    FILE_OUT=$(file "${ELECTRON_BIN}")
+    echo "${FILE_OUT}" | grep -q "ELF.*x86-64" || \
+        die "Downloaded electron binary is not Linux x86-64 ELF.
+Got: ${FILE_OUT}
+This should not happen with a legitimate electron release."
+
+    chmod 755 "${ELECTRON_BIN}"
+    log "Linux Electron v${ELECTRON_VERSION} ready: ${ELECTRON_LINUX_DIR}"
+    log "Binary: ${FILE_OUT}"
+fi
+
+# Confirm chrome-sandbox setuid helper is present
+[[ -f "${ELECTRON_LINUX_DIR}/chrome-sandbox" ]] || \
+    log "WARNING: chrome-sandbox not found in Electron package — sandbox will be unavailable"
+
+# ============================================================
+# STEP 2: Patch native modules
+# ============================================================
+log "=== Step 2: Patch native modules ==="
+
+log "Creating patched copy of app..."
 rm -rf "${PATCHED_DIR}"
 cp -r "${APP_DIR}" "${PATCHED_DIR}"
 
-# ============================================================
-# STEP 1: Find Windows native module in extracted app
-# ============================================================
-log "Locating Windows native module(s)..."
+# Catalog all Windows .node files in the unpacked app
+declare -A WIN_NODES  # module_basename -> full_path_in_patched_dir
+while IFS= read -r node_path; do
+    [[ -z "${node_path}" ]] && continue
+    mod_name=$(basename "${node_path}")
+    WIN_NODES["${mod_name}"]="${node_path}"
+done < <(find "${PATCHED_DIR}" -name "*.node" -type f 2>/dev/null || true)
 
-# Claude uses a native module — it may be named various things
-NATIVE_NODE=$(find "${PATCHED_DIR}" -name "*.node" -type f 2>/dev/null || true)
-
-if [[ -z "${NATIVE_NODE}" ]]; then
-    warn "No .node files found in app. Native patching may not be needed or app structure changed."
+if [[ ${#WIN_NODES[@]} -eq 0 ]]; then
+    log "No .node files found in app — no native module replacement needed."
+elif [[ "${SKIP_NATIVE_PATCH}" == "1" ]]; then
+    log "WARNING: SKIP_NATIVE_PATCH=1 — skipping native module replacement."
+    log "         The .node files currently in the patched dir are Windows PE32+ and WILL NOT RUN on Linux."
 else
-    log "Found native modules:"
-    while IFS= read -r f; do
-        log "  ${f}"
-        file "${f}" 2>/dev/null || true
-    done <<< "${NATIVE_NODE}"
-fi
+    log "Found ${#WIN_NODES[@]} native module(s) to replace:"
+    for mod_name in "${!WIN_NODES[@]}"; do
+        log "  ${mod_name} <- $(file "${WIN_NODES[${mod_name}]}" | sed 's/.*: //')"
+    done
 
-if [[ "${SKIP_NATIVE_PATCH}" == "1" ]]; then
-    warn "SKIP_NATIVE_PATCH=1, skipping native binding replacement"
-else
-    # ============================================================
-    # STEP 2: Get Linux native bindings
-    # ============================================================
+    REPLACE_FAILED=0
 
-    LINUX_NATIVE_NODE=""
+    for mod_name in "${!WIN_NODES[@]}"; do
+        win_path="${WIN_NODES[${mod_name}]}"
+        log "--- Replacing: ${mod_name} ---"
 
-    # --- Strategy A: pre-staged in repo patches/runtime/ ---
-    STAGED=$(find "${PATCHES_RUNTIME_DIR}" -name "*.node" -type f 2>/dev/null | head -1 || true)
-    if [[ -n "${STAGED}" ]]; then
-        log "Using pre-staged native bindings: ${STAGED}"
-        LINUX_NATIVE_NODE="${STAGED}"
-    fi
+        LINUX_NODE=""
 
-    # --- Strategy B: download from aaddrick releases ---
-    if [[ -z "${LINUX_NATIVE_NODE}" ]]; then
-        log "Trying to download Linux native bindings from ${DEBIAN_REPO} releases..."
-        if command -v gh >/dev/null 2>&1; then
-            RELEASE_ASSET=$(gh release list -R "${DEBIAN_REPO}" --limit 5 --json tagName,assets \
-                2>/dev/null | python3 -c "
-import json, sys
-releases = json.load(sys.stdin)
-for r in releases:
-    for a in r.get('assets', []):
-        if a['name'].endswith('.node') and 'linux' in a['name'].lower():
-            print(a['url'])
-            sys.exit(0)
-" 2>/dev/null || true)
-
-            if [[ -n "${RELEASE_ASSET}" ]]; then
-                DOWNLOAD_PATH="${WORK_DIR}/linux-native.node"
-                gh release download -R "${DEBIAN_REPO}" --pattern "*.node" -D "${WORK_DIR}" 2>/dev/null && \
-                    LINUX_NATIVE_NODE=$(find "${WORK_DIR}" -name "*.node" -newer "${APP_DIR}/package.json" | head -1 || true)
-            fi
+        # Strategy A: pre-staged in patches/runtime/<exact-name>
+        if [[ -f "${PATCHES_RUNTIME_DIR}/${mod_name}" ]]; then
+            LINUX_NODE="${PATCHES_RUNTIME_DIR}/${mod_name}"
+            log "  Source: pre-staged (${LINUX_NODE})"
         fi
 
-        # Try direct GitHub API if gh not available
-        if [[ -z "${LINUX_NATIVE_NODE}" ]]; then
-            log "Trying GitHub API for release assets..."
-            ASSET_URL=$(curl -sf "https://api.github.com/repos/${DEBIAN_REPO}/releases/latest" 2>/dev/null | \
-                python3 -c "
+        # Strategy B: download from aaddrick/claude-desktop-debian releases
+        if [[ -z "${LINUX_NODE}" ]]; then
+            log "  Trying aaddrick releases for: ${mod_name}"
+            ASSET_URL=$(curl -sf \
+                "https://api.github.com/repos/${DEBIAN_REPO}/releases/latest" \
+                -H "Accept: application/vnd.github.v3+json" 2>/dev/null | \
+            python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+target = sys.argv[1]
 for a in data.get('assets', []):
-    if a['name'].endswith('.node') and ('linux' in a['name'].lower() or 'native' in a['name'].lower()):
+    name = a['name']
+    # Match by exact filename or by stripping platform prefix
+    if name == target or name.endswith('_' + target) or name.endswith('-' + target):
         print(a['browser_download_url'])
-        break
-" 2>/dev/null || true)
+        sys.exit(0)
+# Looser match: any .node file
+for a in data.get('assets', []):
+    if a['name'].endswith('.node'):
+        print(a['browser_download_url'])
+        sys.exit(0)
+" "${mod_name}" 2>/dev/null || true)
 
             if [[ -n "${ASSET_URL}" ]]; then
-                DOWNLOAD_PATH="${WORK_DIR}/linux-native.node"
-                curl -sL --fail "${ASSET_URL}" -o "${DOWNLOAD_PATH}" && LINUX_NATIVE_NODE="${DOWNLOAD_PATH}"
-                log "Downloaded Linux native module from release"
+                DOWNLOAD_PATH="${WORK_DIR}/${mod_name}"
+                curl -sL --fail "${ASSET_URL}" -o "${DOWNLOAD_PATH}" && LINUX_NODE="${DOWNLOAD_PATH}"
+                log "  Source: aaddrick release (${ASSET_URL})"
             fi
         fi
-    fi
 
-    # --- Strategy C: install claude-native from npm ---
-    if [[ -z "${LINUX_NATIVE_NODE}" ]]; then
-        log "Trying npm for claude-native bindings..."
-        NPM_WORK="${WORK_DIR}/npm-native"
-        mkdir -p "${NPM_WORK}"
-
-        # Detect Electron version to get correct Node ABI
-        ELECTRON_VERSION="${ELECTRON_VERSION:-}"
-        if [[ -z "${ELECTRON_VERSION}" ]]; then
-            EXTRACT_META="${WORK_DIR}/extract.json"
-            [[ -f "${EXTRACT_META}" ]] && \
-                ELECTRON_VERSION=$(grep -oP '"electron_version":\s*"\K[^"]+' "${EXTRACT_META}" | head -1 || true)
-        fi
-
-        # Try installing the native package
-        for PKG in "claude-native" "@anthropic-ai/claude-native"; do
-            if (cd "${NPM_WORK}" && npm install "${PKG}" 2>/dev/null); then
-                CANDIDATE=$(find "${NPM_WORK}" -name "*.node" -type f | head -1 || true)
-                if [[ -n "${CANDIDATE}" ]]; then
-                    LINUX_NATIVE_NODE="${CANDIDATE}"
-                    log "Got native module from npm package: ${PKG}"
-                    break
+        # Strategy C: npm
+        if [[ -z "${LINUX_NODE}" ]]; then
+            log "  Trying npm for native module..."
+            NPM_WORK="${WORK_DIR}/npm-native-$$"
+            mkdir -p "${NPM_WORK}"
+            # Derive likely package name from module basename (e.g. claude_native.node -> claude-native)
+            PKG_GUESS=$(echo "${mod_name%.node}" | tr '_' '-')
+            for PKG in "${PKG_GUESS}" "claude-native" "@anthropic-ai/claude-native"; do
+                if (cd "${NPM_WORK}" && npm install --ignore-scripts "${PKG}" 2>/dev/null); then
+                    CANDIDATE=$(find "${NPM_WORK}" -name "${mod_name}" -type f 2>/dev/null | head -1 || true)
+                    if [[ -n "${CANDIDATE}" ]]; then
+                        LINUX_NODE="${CANDIDATE}"
+                        log "  Source: npm package ${PKG}"
+                        break
+                    fi
                 fi
+            done
+            rm -rf "${NPM_WORK}"
+        fi
+
+        # FAIL hard if no replacement found — do not package known-broken binaries
+        if [[ -z "${LINUX_NODE}" ]]; then
+            log "  FAILED: No Linux replacement found for ${mod_name}"
+            log "  To fix: compile or obtain a Linux build of this module and place it at:"
+            log "          ${PATCHES_RUNTIME_DIR}/${mod_name}"
+            REPLACE_FAILED=1
+            continue
+        fi
+
+        # Validate replacement is Linux ELF x86-64
+        LINUX_FILE_OUT=$(file "${LINUX_NODE}")
+        if ! echo "${LINUX_FILE_OUT}" | grep -q "ELF.*x86-64"; then
+            die "Replacement for ${mod_name} is not Linux x86-64 ELF.
+Got: ${LINUX_FILE_OUT}
+Source: ${LINUX_NODE}
+Place a correct Linux .node file at: ${PATCHES_RUNTIME_DIR}/${mod_name}"
+        fi
+
+        # Report ABI type (informational — helps diagnose future version mismatches)
+        if command -v nm >/dev/null 2>&1; then
+            if nm -D "${LINUX_NODE}" 2>/dev/null | grep -q 'napi_module_register'; then
+                log "  ABI: N-API (ABI-stable across Node.js versions)"
+            elif nm -D "${LINUX_NODE}" 2>/dev/null | grep -q 'node_module_register\|NODE_MODULE_VERSION'; then
+                log "  ABI: Non-NAPI (pinned to specific Node ABI — verify Electron v${ELECTRON_VERSION} compatibility)"
             fi
-        done
+        fi
+
+        # Replace
+        cp "${LINUX_NODE}" "${win_path}"
+        chmod 755 "${win_path}"
+        SHA256=$(sha256sum "${win_path}" | awk '{print $1}')
+        log "  Replaced: ${win_path}"
+        log "  SHA256:   ${SHA256}"
+    done
+
+    if [[ "${REPLACE_FAILED}" -ne 0 ]]; then
+        die "One or more native modules could not be replaced with Linux equivalents.
+The build has been aborted to prevent publishing an RPM with non-functional binaries.
+See above for which modules failed and how to supply replacements."
     fi
 
-    # --- Replace Windows .node files with Linux version ---
-    if [[ -n "${LINUX_NATIVE_NODE}" ]]; then
-        log "Linux native module: ${LINUX_NATIVE_NODE}"
-        log "Architecture: $(file "${LINUX_NATIVE_NODE}" 2>/dev/null || echo "unknown")"
-
-        # Replace each Windows .node file
-        while IFS= read -r WIN_NODE; do
-            [[ -z "${WIN_NODE}" ]] && continue
-            NODE_NAME=$(basename "${WIN_NODE}")
-            log "Replacing: ${WIN_NODE}"
-            cp "${LINUX_NATIVE_NODE}" "${WIN_NODE}"
-            log "  -> replaced with Linux version"
-        done < <(find "${PATCHED_DIR}" -name "*.node" -type f 2>/dev/null || true)
-
-        # Record what we patched
-        SHA256=$(sha256sum "${LINUX_NATIVE_NODE}" | awk '{print $1}')
-        log "Replacement SHA256: ${SHA256}"
-    else
-        warn "Could not obtain Linux native bindings."
-        warn "The app may not function correctly without them."
-        warn "You can manually place a Linux .node file in patches/runtime/ and re-run."
-    fi
+    log "All native modules replaced successfully."
 fi
 
 # ============================================================
-# STEP 3: Patch Windows-specific paths and settings in JS
+# STEP 3: Neutralize Windows-only startup hooks
 # ============================================================
-log "Patching Windows-specific content in app JS..."
+log "=== Step 3: Windows startup patches ==="
 
-# Remove Windows-specific electron flags if present
-MAIN_JS=""
-for candidate in "${PATCHED_DIR}/main.js" "${PATCHED_DIR}/index.js" "${PATCHED_DIR}/app.js"; do
-    [[ -f "${candidate}" ]] && MAIN_JS="${candidate}" && break
-done
-
-if [[ -n "${MAIN_JS}" ]]; then
-    log "Patching main entry: ${MAIN_JS}"
-    # Example: remove Windows registry calls, etc.
-    # Add Linux-specific startup flags
-    true  # placeholder — real patches added here as discovered
-fi
-
-# Remove Windows-specific squirrel update handling if present
 SQUIRREL_CHECK="${PATCHED_DIR}/node_modules/electron-squirrel-startup/index.js"
 if [[ -f "${SQUIRREL_CHECK}" ]]; then
-    log "Neutralizing Squirrel auto-updater startup check (Linux doesn't use Squirrel)..."
+    log "Neutralizing Squirrel auto-updater startup check..."
     echo "module.exports = false;" > "${SQUIRREL_CHECK}"
 fi
 
 # ============================================================
-# STEP 4: Inject Linux-specific metadata
+# STEP 4: Stamp Linux packaging info into package.json
 # ============================================================
-log "Updating package.json for Linux..."
 PKG_JSON="${PATCHED_DIR}/package.json"
 if [[ -f "${PKG_JSON}" ]]; then
-    # Add linux packaging metadata using Python to preserve JSON formatting
     python3 - "${PKG_JSON}" "${VERSION}" <<'PYEOF'
 import json, sys
-
-pkg_path = sys.argv[1]
-version  = sys.argv[2]
-
-with open(pkg_path) as f:
+path, version = sys.argv[1], sys.argv[2]
+with open(path) as f:
     pkg = json.load(f)
-
 pkg.setdefault('linuxPackaging', {
     'platform': 'fedora',
     'packagedBy': 'claude-desktop-fedora',
     'packagedVersion': version
 })
-
-with open(pkg_path, 'w') as f:
+with open(path, 'w') as f:
     json.dump(pkg, f, indent=2)
     f.write('\n')
 PYEOF
-    log "package.json updated."
+    log "package.json stamped with Linux packaging metadata."
 fi
 
 # ============================================================
 # STEP 5: Write patch manifest
 # ============================================================
-PATCH_MANIFEST="${WORK_DIR}/patch-manifest.json"
-cat > "${PATCH_MANIFEST}" <<EOF
+NATIVE_REPLACED="false"
+[[ ${#WIN_NODES[@]} -gt 0 && "${SKIP_NATIVE_PATCH}" != "1" ]] && NATIVE_REPLACED="true"
+
+cat > "${WORK_DIR}/patch-manifest.json" <<EOF
 {
   "version": "${VERSION}",
+  "electron_version": "${ELECTRON_VERSION}",
   "patched_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "native_bindings_replaced": $([ -n "${LINUX_NATIVE_NODE:-}" ] && echo "true" || echo "false"),
-  "native_source": "${LINUX_NATIVE_NODE:-none}",
+  "linux_electron_dir": "${ELECTRON_LINUX_DIR}",
+  "native_modules_found": ${#WIN_NODES[@]},
+  "native_bindings_replaced": ${NATIVE_REPLACED},
   "squirrel_neutralized": $([ -f "${SQUIRREL_CHECK:-/nonexistent}" ] && echo "true" || echo "false")
 }
 EOF
-log "Patch manifest: ${PATCH_MANIFEST}"
-
-log "Patching complete. Patched app at: ${PATCHED_DIR}"
+log "Patch manifest written: ${WORK_DIR}/patch-manifest.json"
+log "Done. Patched app: ${PATCHED_DIR}"
+log "      Linux Electron: ${ELECTRON_LINUX_DIR}"
