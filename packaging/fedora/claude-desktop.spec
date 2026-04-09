@@ -70,7 +70,7 @@ This package is produced by extracting the official Windows installer,
 replacing Windows-only native components with Linux-compatible equivalents,
 and repackaging as an RPM.
 
-See: https://github.com/REPO_PLACEHOLDER for source and build scripts.
+See: https://github.com/Brownster/claude-desktop-fedora for source and build scripts.
 
 %prep
 %autosetup -n %{name}-%{version}

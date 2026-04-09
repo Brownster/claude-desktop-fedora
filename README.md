@@ -57,7 +57,7 @@ sudo dnf install -y \
   bubblewrap
 
 # Clone and build
-git clone https://github.com/YOUR_USERNAME/claude-desktop-fedora
+git clone https://github.com/Brownster/claude-desktop-fedora
 cd claude-desktop-fedora
 ./packaging/scripts/build-rpm.sh
 
