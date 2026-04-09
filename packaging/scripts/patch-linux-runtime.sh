@@ -63,9 +63,11 @@ log "Electron version: ${ELECTRON_VERSION}"
 
 [[ -d "${APP_DIR}" ]] || die "App dir not found: ${APP_DIR}. Run extract-windows.sh first."
 
-command -v curl   >/dev/null 2>&1 || die "curl is required"
-command -v unzip  >/dev/null 2>&1 || die "unzip is required"
-command -v file   >/dev/null 2>&1 || die "file (from file-libs) is required"
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v unzip >/dev/null 2>&1 || die "unzip is required"
+command -v file >/dev/null 2>&1 || die "file (from file-libs) is required"
+command -v make >/dev/null 2>&1 || die "make is required to rebuild native modules"
+command -v g++ >/dev/null 2>&1 || die "g++ (from gcc-c++) is required to rebuild native modules"
 
 # ============================================================
 # STEP 1: Download Linux Electron runtime
@@ -125,6 +127,21 @@ log "=== Step 2: Patch native modules ==="
 log "Creating patched copy of app..."
 rm -rf "${PATCHED_DIR}"
 cp -r "${APP_DIR}" "${PATCHED_DIR}"
+
+# Drop Windows-only native baggage before scanning for Linux replacements.
+# `node-pty` only needs pty.node on Linux, and Claude's JS wrapper tolerates
+# `@ant/claude-native` being unavailable by catching the require() failure.
+for remove_path in \
+    "${PATCHED_DIR}/node_modules/node-pty/build/Release/conpty.node" \
+    "${PATCHED_DIR}/node_modules/node-pty/build/Release/conpty_console_list.node" \
+    "${PATCHED_DIR}/node_modules/node-pty/build/Release/winpty-agent.exe" \
+    "${PATCHED_DIR}/node_modules/node-pty/build/Release/winpty.dll" \
+    "${PATCHED_DIR}/node_modules/@ant/claude-native/claude-native-binding.node"; do
+    if [[ -e "${remove_path}" ]]; then
+        rm -f "${remove_path}"
+        log "Removed Windows-only/optional artifact: ${remove_path#${PATCHED_DIR}/}"
+    fi
+done
 
 # Catalog all Windows .node files in the unpacked app
 declare -A WIN_NODES  # module_basename -> full_path_in_patched_dir
@@ -190,13 +207,50 @@ for a in data.get('assets', []):
             log "  Trying npm for native module..."
             NPM_WORK="${WORK_DIR}/npm-native-$$"
             mkdir -p "${NPM_WORK}"
+
+            PACKAGE_JSON=""
+            SEARCH_DIR=$(dirname "${win_path}")
+            while [[ "${SEARCH_DIR}" != "${PATCHED_DIR}" && "${SEARCH_DIR}" != "/" ]]; do
+                if [[ -f "${SEARCH_DIR}/package.json" ]]; then
+                    PACKAGE_JSON="${SEARCH_DIR}/package.json"
+                    break
+                fi
+                SEARCH_DIR=$(dirname "${SEARCH_DIR}")
+            done
+
+            PKG_SPEC=""
+            if [[ -n "${PACKAGE_JSON}" ]]; then
+                PKG_META=$(python3 - "${PACKAGE_JSON}" <<'PYEOF'
+import json
+import sys
+
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+
+name = data.get("name", "")
+version = data.get("version", "")
+is_private = "true" if data.get("private") else "false"
+print(f"{name}\t{version}\t{is_private}")
+PYEOF
+)
+                IFS=$'\t' read -r PKG_NAME PKG_VERSION PKG_PRIVATE <<< "${PKG_META}"
+                if [[ -n "${PKG_NAME}" ]] && [[ "${PKG_PRIVATE}" != "true" ]] && [[ -n "${PKG_VERSION}" ]]; then
+                    PKG_SPEC="${PKG_NAME}@${PKG_VERSION}"
+                elif [[ -n "${PKG_NAME}" ]] && [[ "${PKG_PRIVATE}" != "true" ]]; then
+                    PKG_SPEC="${PKG_NAME}"
+                fi
+            fi
+
             # Derive likely package name from module basename (e.g. claude_native.node -> claude-native)
             PKG_GUESS=$(echo "${mod_name%.node}" | tr '_' '-')
-            for PKG in "${PKG_GUESS}" "claude-native" "@anthropic-ai/claude-native"; do
-                if (cd "${NPM_WORK}" && npm install --ignore-scripts "${PKG}" 2>/dev/null); then
+            for PKG in "${PKG_SPEC}" "${PKG_GUESS}" "node-pty" "claude-native" "@anthropic-ai/claude-native"; do
+                [[ -z "${PKG}" ]] && continue
+                if (cd "${NPM_WORK}" && npm install --omit=dev "${PKG}" 2>/dev/null); then
                     CANDIDATE=$(find "${NPM_WORK}" -name "${mod_name}" -type f 2>/dev/null | head -1 || true)
                     if [[ -n "${CANDIDATE}" ]]; then
-                        LINUX_NODE="${CANDIDATE}"
+                        DOWNLOAD_PATH="${WORK_DIR}/linux-${mod_name}"
+                        cp "${CANDIDATE}" "${DOWNLOAD_PATH}"
+                        LINUX_NODE="${DOWNLOAD_PATH}"
                         log "  Source: npm package ${PKG}"
                         break
                     fi

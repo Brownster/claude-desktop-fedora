@@ -8,7 +8,7 @@ Unofficial Fedora RPM package for [Claude Desktop](https://claude.ai/download) b
 ## What this is
 
 A reproducible build pipeline that:
-1. Downloads the official Windows Claude Desktop installer from Anthropic's servers
+1. Uses the official Windows Claude Desktop installer as the upstream source artifact
 2. Extracts the cross-platform Electron app
 3. Replaces Windows-only native components with Linux-compatible equivalents
 4. Packages the result as an RPM for Fedora / RHEL / compatible systems
@@ -51,19 +51,26 @@ sudo dnf install -y \
   p7zip p7zip-plugins \
   rpm-build rpmdevtools \
   desktop-file-utils \
+  ImageMagick \
   file tar xz \
   nodejs npm \
-  python3 \
+  python3 gcc-c++ make \
   bubblewrap
 
 # Clone and build
 git clone https://github.com/Brownster/claude-desktop-fedora
 cd claude-desktop-fedora
-./packaging/scripts/build-rpm.sh
+
+# Supply the latest Windows installer locally
+./packaging/scripts/build-rpm.sh --installer "Claude Setup.exe"
 
 # Install
 sudo dnf install ./dist/claude-desktop-*.rpm
 ```
+
+The local installer is intentionally not fetched in GitHub-hosted CI. Anthropic's
+download endpoints are currently unreliable from hosted runners, so the supported
+build path is to provide the upstream EXE locally.
 
 ## Usage
 
@@ -77,6 +84,12 @@ CLAUDE_DISABLE_GPU=1 claude-desktop
 # MCP config
 ~/.config/Claude/claude_desktop_config.json
 ```
+
+## Known limitations
+
+- `Cowork` is not working yet on this unofficial Linux repack. The current build
+  logs in and `Chat` works, but Cowork is still gated behind Anthropic's official
+  desktop platform support.
 
 ## How to verify artifacts
 
@@ -127,7 +140,7 @@ claude-desktop
 journalctl --user -xe | grep claude
 
 # Wayland issues — force X11
-OZONE_PLATFORM=x11 claude-desktop
+CLAUDE_OZONE_PLATFORM=x11 claude-desktop
 ```
 
 ## Architecture

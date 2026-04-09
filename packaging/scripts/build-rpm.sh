@@ -57,7 +57,7 @@ done
 # --- prerequisite check ---
 log "Checking prerequisites"
 MISSING=()
-for cmd in 7z node npm rpmbuild sha256sum curl tar python3; do
+for cmd in 7z node npm rpmbuild sha256sum curl tar python3 unzip file make g++; do
     command -v "${cmd}" >/dev/null 2>&1 || MISSING+=("${cmd}")
 done
 

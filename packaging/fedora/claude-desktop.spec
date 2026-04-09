@@ -17,6 +17,7 @@
 
 %{!?upstream_version: %global upstream_version UNDEFINED}
 %{!?rpm_release: %global rpm_release 1}
+%global debug_package %{nil}
 
 Name:           claude-desktop
 Version:        %{upstream_version}
@@ -164,5 +165,5 @@ find %{buildroot}/opt/%{name}/resources -name "*.asar" -exec chmod 644 {} \;
 %{_datadir}/icons/hicolor/*/apps/claude-desktop.*
 
 %changelog
-* Wed Apr 09 2026 Unofficial Packager <noreply@example.com> - %{upstream_version}-%{rpm_release}
+* Thu Apr 09 2026 Unofficial Packager <noreply@example.com> - %{upstream_version}-%{rpm_release}
 - Automated packaging of Claude Desktop %{upstream_version} for Fedora

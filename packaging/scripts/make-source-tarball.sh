@@ -28,6 +28,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORK_DIR="${WORK_DIR:-${REPO_ROOT}/work}"
 PATCHED_DIR="${WORK_DIR}/app-patched"
 ELECTRON_LINUX_DIR="${WORK_DIR}/electron-linux"
+EXTRACTED_RESOURCES_DIR="${WORK_DIR}/extracted/app/resources"
 SOURCES_DIR="${WORK_DIR}/sources"
 STAGING_DIR="${WORK_DIR}/staging"
 FEDORA_PKG_DIR="${REPO_ROOT}/packaging/fedora"
@@ -63,8 +64,10 @@ mkdir -p "${SOURCES_DIR}"
 # --- repack app.asar from patched tree ---
 log "Repacking app.asar from patched tree..."
 ASAR_OUTPUT="${WORK_DIR}/app.asar"
+ASAR_UNPACKED_DIR="${WORK_DIR}/app.asar.unpacked"
 rm -f "${ASAR_OUTPUT}"
-npx --yes @electron/asar pack "${PATCHED_DIR}" "${ASAR_OUTPUT}"
+rm -rf "${ASAR_UNPACKED_DIR}"
+npx --yes @electron/asar pack "${PATCHED_DIR}" "${ASAR_OUTPUT}" --unpack "*.node"
 log "Repacked: ${ASAR_OUTPUT} ($(du -sh "${ASAR_OUTPUT}" | cut -f1))"
 
 # --- build staging tree ---
@@ -85,12 +88,27 @@ else
     die "electron binary not found in staging dir after copy — something went wrong"
 fi
 
+# Carry through upstream top-level resource files that live outside app.asar.
+# The current Claude build expects locale JSONs and other assets directly under
+# resources/, not only inside app.asar.
+if [[ -d "${EXTRACTED_RESOURCES_DIR}" ]]; then
+    cp -r "${EXTRACTED_RESOURCES_DIR}/." "${STAGE}/resources/"
+fi
+
 # Place repacked asar into resources/
 cp "${ASAR_OUTPUT}" "${STAGE}/resources/app.asar"
 log "Placed app.asar"
 
+if [[ -d "${ASAR_UNPACKED_DIR}" ]]; then
+    cp -r "${ASAR_UNPACKED_DIR}" "${STAGE}/resources/app.asar.unpacked"
+    log "Placed app.asar.unpacked"
+fi
+
 # Remove Electron's default_app.asar if present (replaced by ours)
 rm -f "${STAGE}/resources/default_app.asar"
+
+# Drop obviously Windows-only helper payloads from resources/
+find "${STAGE}/resources" \( -name "*.exe" -o -name "*.dll" -o -name "*.vhdx" -o -name "*.pdb" \) -delete 2>/dev/null || true
 
 # Copy packaging resources from repo
 [[ -f "${FEDORA_PKG_DIR}/claude-desktop.sh" ]] && \
@@ -101,6 +119,30 @@ rm -f "${STAGE}/resources/default_app.asar"
 # Copy icons
 if [[ -d "${FEDORA_PKG_DIR}/icons" ]] && [[ -n "$(ls "${FEDORA_PKG_DIR}/icons/" 2>/dev/null)" ]]; then
     cp -r "${FEDORA_PKG_DIR}/icons/." "${STAGE}/icons/"
+else
+    SOURCE_ICON=""
+    for candidate in \
+        "${WORK_DIR}/extracted/app/resources/ion-dist/images/claude_app_icon.png" \
+        "${WORK_DIR}/extracted/app/resources/claude-screen.png"; do
+        if [[ -f "${candidate}" ]]; then
+            SOURCE_ICON="${candidate}"
+            break
+        fi
+    done
+
+    if [[ -n "${SOURCE_ICON}" ]]; then
+        if command -v convert >/dev/null 2>&1; then
+            for SIZE in 16 32 48 64 128 256 512; do
+                convert "${SOURCE_ICON}" -resize "${SIZE}x${SIZE}" "${STAGE}/icons/${SIZE}x${SIZE}.png"
+            done
+            log "Generated hicolor icons from ${SOURCE_ICON}"
+        else
+            cp "${SOURCE_ICON}" "${STAGE}/icons/256x256.png"
+            log "WARNING: convert not found — copied source icon without resizing"
+        fi
+    else
+        log "WARNING: no icon source found — desktop integration icons will be missing"
+    fi
 fi
 
 # Copy LICENSE (for %license in spec)
@@ -152,4 +194,4 @@ log "Size:    $(du -sh "${TARBALL_FILE}" | cut -f1)"
 log "SHA256:  ${TARBALL_SHA256}"
 log "Done."
 
-info "${TARBALL_FILE}"
+echo "${TARBALL_FILE}"

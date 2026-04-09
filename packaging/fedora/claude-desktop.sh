@@ -13,11 +13,27 @@ if [[ ! -x "${CLAUDE_BIN}" ]]; then
 fi
 
 # ---- Wayland / display detection ----
-# Prefer Wayland when compositor supports it; fall back to X11 gracefully
-OZONE_FLAGS=(
-    "--enable-features=UseOzonePlatform,WaylandWindowDecorations"
-    "--ozone-platform-hint=auto"
-)
+# KDE Wayland has been unreliable for pointer/input handling in this build, so
+# prefer X11 there unless the user explicitly overrides the platform choice.
+OZONE_FLAGS=()
+if [[ -n "${CLAUDE_OZONE_PLATFORM:-}" ]]; then
+    case "${CLAUDE_OZONE_PLATFORM}" in
+        x11|wayland|auto)
+            OZONE_FLAGS+=("--ozone-platform=${CLAUDE_OZONE_PLATFORM}")
+            ;;
+        *)
+            echo "claude-desktop: unsupported CLAUDE_OZONE_PLATFORM='${CLAUDE_OZONE_PLATFORM}' (expected x11, wayland, or auto)" >&2
+            exit 1
+            ;;
+    esac
+elif [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]] && [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE ]]; then
+    OZONE_FLAGS+=("--ozone-platform=x11")
+else
+    OZONE_FLAGS+=(
+        "--enable-features=UseOzonePlatform,WaylandWindowDecorations"
+        "--ozone-platform-hint=auto"
+    )
+fi
 
 # ---- Sandbox flags ----
 # chrome-sandbox requires setuid root in the RPM. If it's missing or not setuid,

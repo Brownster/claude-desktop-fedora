@@ -16,7 +16,7 @@
 # Usage: ./extract-windows.sh
 # Env:   WORK_DIR
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -24,9 +24,69 @@ WORK_DIR="${WORK_DIR:-${REPO_ROOT}/work}"
 UPSTREAM_DIR="${WORK_DIR}/upstream"
 EXTRACT_DIR="${WORK_DIR}/extracted"
 APP_DIR="${WORK_DIR}/app"
+MSIX_FILE="${UPSTREAM_DIR}/claude.msix"
+MSIX_URL="https://claude.ai/api/desktop/win32/x64/msix/latest/redirect"
 
 log() { printf '[extract-windows] %s\n' "$*" >&2; }
 die() { printf '[extract-windows] ERROR: %s\n' "$*" >&2; exit 1; }
+
+fct_update_upstream_json_with_msix() {
+    local upstream_json="$1"
+    local msix_effective_url="$2"
+    local msix_redirect_url="$3"
+    local msix_sha256="$4"
+
+    [[ -f "${upstream_json}" ]] || return 0
+
+    python3 - "${upstream_json}" "${msix_effective_url}" "${msix_redirect_url}" "${msix_sha256}" <<'PYEOF'
+import json
+import sys
+
+path, effective_url, redirect_url, sha256 = sys.argv[1:]
+with open(path) as f:
+    data = json.load(f)
+
+data["payload_source_url"] = effective_url
+data["payload_redirect_url"] = redirect_url
+data["payload_filename"] = "claude.msix"
+data["payload_sha256"] = sha256
+
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+}
+
+fct_download_bootstrapper_payload_if_needed() {
+    local upstream_json="${UPSTREAM_DIR}/upstream.json"
+    local msix_effective_url=""
+    local msix_sha256=""
+
+    command -v curl >/dev/null 2>&1 || die "curl is required to fetch the bootstrapper MSIX payload"
+
+    if [[ -f "${MSIX_FILE}" ]]; then
+        log "Using cached MSIX payload: ${MSIX_FILE}"
+    else
+        log "Installer appears to be a bootstrapper. Downloading MSIX payload..."
+        log "MSIX URL: ${MSIX_URL}"
+        curl -L --fail --progress-bar "${MSIX_URL}" -o "${MSIX_FILE}.tmp" || \
+            die "Failed to download MSIX payload from ${MSIX_URL}"
+        mv "${MSIX_FILE}.tmp" "${MSIX_FILE}"
+    fi
+
+    msix_effective_url=$(curl -sL --max-redirs 10 -o /dev/null -w '%{url_effective}' \
+        "${MSIX_URL}" 2>/dev/null || echo "${MSIX_URL}")
+    msix_sha256=$(sha256sum "${MSIX_FILE}" | awk '{print $1}')
+    log "MSIX SHA256: ${msix_sha256}"
+
+    fct_update_upstream_json_with_msix "${upstream_json}" "${msix_effective_url}" "${MSIX_URL}" "${msix_sha256}"
+
+    log "Extracting MSIX payload with 7z..."
+    rm -rf "${EXTRACT_DIR}"
+    mkdir -p "${EXTRACT_DIR}"
+    7z x -y "${MSIX_FILE}" -o"${EXTRACT_DIR}" > /dev/null 2>&1 || \
+        die "Failed to extract MSIX payload: ${MSIX_FILE}"
+}
 
 # --- find the installer ---
 # Version is NOT known at this stage — it is detected from the installer content below.
@@ -38,9 +98,10 @@ EXE_FILE=$(find "${UPSTREAM_DIR}" -maxdepth 1 -name "*.exe" ! -name "*.tmp*" -ty
 log "Installer: ${EXE_FILE}"
 
 # --- tool checks ---
-command -v 7z  >/dev/null 2>&1 || die "p7zip is required (sudo dnf install p7zip p7zip-plugins)"
+command -v 7z >/dev/null 2>&1 || die "p7zip is required (sudo dnf install p7zip p7zip-plugins)"
 command -v node >/dev/null 2>&1 || die "node is required"
-command -v npm  >/dev/null 2>&1 || die "npm is required"
+command -v npm >/dev/null 2>&1 || die "npm is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
 # --- verify checksum ---
 if [[ -f "${UPSTREAM_DIR}/SHA256SUMS" ]]; then
@@ -75,12 +136,23 @@ if [[ -z "${ASAR_FILE}" ]]; then
     fi
 fi
 
-[[ -z "${ASAR_FILE}" ]] && die "Could not find app.asar in installer. Upstream structure may have changed."
+if [[ -z "${ASAR_FILE}" ]]; then
+    fct_download_bootstrapper_payload_if_needed
+    ASAR_FILE=$(find "${EXTRACT_DIR}" -name "app.asar" -type f 2>/dev/null | head -1 || true)
+fi
+
+[[ -z "${ASAR_FILE}" ]] && die "Could not find app.asar in installer or MSIX payload. Upstream structure may have changed."
 log "Found app.asar: ${ASAR_FILE}"
 
 RESOURCES_DIR=$(dirname "${ASAR_FILE}")
 APP_ROOT=$(dirname "${RESOURCES_DIR}")
 log "App root: ${APP_ROOT}"
+
+UNPACKED_DIR="${ASAR_FILE}.unpacked"
+if [[ -d "${UNPACKED_DIR}/node_modules/%40ant" ]] && [[ ! -e "${UNPACKED_DIR}/node_modules/@ant" ]]; then
+    log "Normalizing unpacked module path: %40ant -> @ant"
+    mv "${UNPACKED_DIR}/node_modules/%40ant" "${UNPACKED_DIR}/node_modules/@ant"
+fi
 
 # --- detect Electron version from version file ---
 # The 'version' file at the app root contains the Electron version string (e.g. "28.3.3")
