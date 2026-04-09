@@ -13,8 +13,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 log()  { printf '[verify-artifact] %s\n' "$*" >&2; }
 pass() { printf '[verify-artifact] PASS: %s\n' "$*" >&2; }
 warn() { printf '[verify-artifact] WARN: %s\n' "$*" >&2; }

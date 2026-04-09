@@ -30,7 +30,8 @@ else
             fi
         done
     fi
-    echo ""; echo "Passed: ${PASS}, Failed: ${FAIL}"; exit $([[ "${FAIL}" -eq 0 ]] && echo 0 || echo 1)
+    echo ""; echo "Passed: ${PASS}, Failed: ${FAIL}"
+    if [[ "${FAIL}" -eq 0 ]]; then exit 0; else exit 1; fi
 fi
 
 # Installed package checks

@@ -108,7 +108,7 @@ for field in "Exec=" "Icon=" "Name=" "Type=Application"; do
     else
         fail ".desktop missing ${field}"
     fi
-fi
+done
 
 section "Launcher script"
 
