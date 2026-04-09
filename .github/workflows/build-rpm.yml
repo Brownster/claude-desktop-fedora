@@ -84,34 +84,30 @@ jobs:
         run: chmod +x packaging/scripts/*.sh tests/**/*.sh
 
       - name: Download upstream installer
-        id: download
-        env:
-          VERSION_OVERRIDE: ${{ github.event.inputs.version }}
-        run: |
-          ARGS=""
-          [ -n "${VERSION_OVERRIDE}" ] && ARGS="--version ${VERSION_OVERRIDE}"
-          VERSION=$(packaging/scripts/download-upstream.sh ${ARGS} | tail -1)
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Upstream version: ${VERSION}"
+        run: packaging/scripts/download-upstream.sh
 
       - name: Extract Windows installer
-        run: packaging/scripts/extract-windows.sh "${{ steps.download.outputs.version }}"
+        id: extract
+        run: |
+          VERSION=$(packaging/scripts/extract-windows.sh | tail -1)
+          if [ -z "${VERSION}" ]; then
+            echo "ERROR: extract-windows.sh did not output a version" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected version: ${VERSION}"
 
       - name: Patch Linux runtime
-        run: packaging/scripts/patch-linux-runtime.sh "${{ steps.download.outputs.version }}"
+        run: packaging/scripts/patch-linux-runtime.sh "${{ steps.extract.outputs.version }}"
 
       - name: Create source tarball
-        id: tarball
-        run: |
-          TARBALL=$(packaging/scripts/make-source-tarball.sh "${{ steps.download.outputs.version }}" | tail -1)
-          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+        run: packaging/scripts/make-source-tarball.sh "${{ steps.extract.outputs.version }}"
 
       - name: Build RPM
         env:
           RPM_RELEASE: ${{ github.event.inputs.rpm_release || '1' }}
         run: |
           packaging/scripts/build-rpm.sh \
-            --version "${{ steps.download.outputs.version }}" \
             --release "${RPM_RELEASE}" \
             --skip-download \
             --skip-extract
@@ -130,7 +126,7 @@ jobs:
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: claude-desktop-rpm-${{ steps.download.outputs.version }}
+          name: claude-desktop-rpm-${{ steps.extract.outputs.version }}
           path: |
             dist/*.rpm
             dist/SHA256SUMS
@@ -140,7 +136,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ steps.download.outputs.version }}
+          name: build-logs-${{ steps.extract.outputs.version }}
           path: |
             work/upstream/upstream.json
             work/extract.json

@@ -72,24 +72,23 @@ mkdir -p "${WORK_DIR}" "${DIST_DIR}"
 log "Step 1: Download upstream installer"
 if [[ "${SKIP_DOWNLOAD}" == "1" ]]; then
     step "Skipping download (--skip-download)"
-    UPSTREAM_JSON="${WORK_DIR}/upstream/upstream.json"
-    [[ -f "${UPSTREAM_JSON}" ]] || die "No upstream.json found. Cannot skip download without prior run."
-    VERSION=$(grep -oP '"version":\s*"\K[^"]+' "${UPSTREAM_JSON}" | head -1)
 else
-    VERSION_ARG=""
-    [[ -n "${FIXED_VERSION}" ]] && VERSION_ARG="--version ${FIXED_VERSION}"
-    VERSION=$("${SCRIPT_DIR}/download-upstream.sh" ${VERSION_ARG} | tail -1)
+    "${SCRIPT_DIR}/download-upstream.sh"
 fi
-[[ -z "${VERSION}" ]] && die "Could not determine version"
-step "Version: ${VERSION}"
 
-# --- step 2: extract ---
+# --- step 2: extract (version detected here, not from download) ---
 log "Step 2: Extract Windows installer"
 if [[ "${SKIP_EXTRACT}" == "1" ]]; then
     step "Skipping extraction (--skip-extract)"
+    # Read version from extract.json written by a previous run
+    EXTRACT_JSON="${WORK_DIR}/extract.json"
+    [[ -f "${EXTRACT_JSON}" ]] || die "No extract.json found. Cannot skip extract without a prior run."
+    VERSION=$(grep -oP '"version":\s*"\K[^"]+' "${EXTRACT_JSON}" | head -1)
 else
-    "${SCRIPT_DIR}/extract-windows.sh" "${VERSION}"
+    VERSION=$("${SCRIPT_DIR}/extract-windows.sh" | tail -1)
 fi
+[[ -z "${VERSION}" || "${VERSION}" == "pending" ]] && die "Could not determine app version from installer"
+step "Version: ${VERSION}"
 
 # --- step 3: patch ---
 log "Step 3: Patch Linux runtime"
