@@ -123,9 +123,12 @@ Update `extract-windows.sh` if the path has changed, then open a PR.
 
 ### `Could not detect version`
 
-The redirect URL format changed. Use manual override:
+The installer no longer exposes enough metadata for the pipeline to determine the
+app version automatically. Re-run the extract step to inspect `work/extract.json`
+and check whether the upstream installer format changed:
 ```bash
-./packaging/scripts/build-rpm.sh --version X.Y.Z
+./packaging/scripts/build-rpm.sh
+cat work/extract.json
 ```
 
 ### Native bindings not found

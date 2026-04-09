@@ -4,7 +4,7 @@
 # Runs: download → extract → patch → tarball → rpmbuild
 # Outputs: dist/claude-desktop-<version>-1.x86_64.rpm
 #
-# Usage: ./build-rpm.sh [--version X.Y.Z] [--skip-download] [--skip-extract] [--release N]
+# Usage: ./build-rpm.sh [--skip-download] [--skip-extract] [--release N]
 # Env:   WORK_DIR, RPM_RELEASE
 
 set -euo pipefail
@@ -19,7 +19,6 @@ RPM_RELEASE="${RPM_RELEASE:-1}"
 
 SKIP_DOWNLOAD=0
 SKIP_EXTRACT=0
-FIXED_VERSION=""
 
 log()  { printf '\n[build-rpm] === %s ===\n' "$*" >&2; }
 die()  { printf '[build-rpm] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -28,7 +27,6 @@ step() { printf '[build-rpm] %s\n' "$*" >&2; }
 # --- arg parsing ---
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version)       FIXED_VERSION="$2"; shift 2 ;;
         --release)       RPM_RELEASE="$2"; shift 2 ;;
         --skip-download) SKIP_DOWNLOAD=1; shift ;;
         --skip-extract)  SKIP_EXTRACT=1; shift ;;
@@ -37,7 +35,6 @@ while [[ $# -gt 0 ]]; do
 Usage: build-rpm.sh [OPTIONS]
 
 Options:
-  --version X.Y.Z    Force upstream version (default: auto-detect)
   --release N        RPM release number (default: 1)
   --skip-download    Skip downloading upstream installer
   --skip-extract     Skip extracting the installer

@@ -113,7 +113,7 @@ jobs:
                 ``,
                 '```bash',
                 `# Test build locally`,
-                `./packaging/scripts/build-rpm.sh --version ${upstream}`,
+                `./packaging/scripts/build-rpm.sh`,
                 ``,
                 `# If good, tag the release`,
                 `git tag v${upstream}-packaging.1`,

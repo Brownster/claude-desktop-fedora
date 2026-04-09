@@ -21,7 +21,7 @@ a new upstream version is available:
 git checkout main && git pull
 
 # 2. Test build locally
-./packaging/scripts/build-rpm.sh --version X.Y.Z
+./packaging/scripts/build-rpm.sh
 
 # 3. Smoke test
 sudo dnf install ./dist/claude-desktop-X.Y.Z-1.x86_64.rpm

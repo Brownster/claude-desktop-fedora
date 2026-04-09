@@ -62,7 +62,6 @@ jobs:
       - name: Full build pipeline
         run: |
           packaging/scripts/build-rpm.sh \
-            --version "${{ steps.version.outputs.upstream }}" \
             --release "${{ steps.version.outputs.rpm_release }}"
 
       - name: Verify RPM structure
