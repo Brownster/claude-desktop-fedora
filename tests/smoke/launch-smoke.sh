@@ -69,16 +69,19 @@ if [[ "${APP_EXITED}" -eq 0 ]]; then
     kill "${APP_PID}" 2>/dev/null || true
     wait "${APP_PID}" 2>/dev/null || true
 else
-    # Process exited before the timeout — check whether it was clean
+    # Process exited before the timeout.
+    # For a GUI desktop app the expected healthy state is "still alive after N seconds".
+    # Any early exit — including a clean exit 0 — is a failure here because it means
+    # the app did not stay up long enough to be useful.
     echo "  Process exited after ${ELAPSED}s with code ${APP_EXIT_CODE}"
     if [[ "${APP_EXIT_CODE}" -eq 0 ]]; then
-        # exit 0 before timeout is unusual for a GUI app but not necessarily wrong
-        pass "Process exited cleanly (exit 0)"
+        fail "Process exited after ${ELAPSED}s with code 0 (expected GUI app to remain running for ${TIMEOUT}s)"
+        echo "  Possible causes: single-instance lock conflict, missing config, early init failure."
     else
         fail "Process crashed with exit code ${APP_EXIT_CODE} after ${ELAPSED}s"
-        echo "  Last 30 lines of stderr log:"
-        tail -30 "${LOG_FILE}" >&2 || true
     fi
+    echo "  Last 30 lines of stderr log:"
+    tail -30 "${LOG_FILE}" >&2 || true
 fi
 
 # --- log analysis ---
