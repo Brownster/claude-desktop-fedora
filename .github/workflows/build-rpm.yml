@@ -68,7 +68,7 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            git curl jq \
+            git curl jq unzip \
             p7zip p7zip-plugins \
             rpm-build rpmdevtools \
             desktop-file-utils \
@@ -166,16 +166,21 @@ jobs:
           pattern: claude-desktop-rpm-*
           path: dist
 
-      - name: Install RPM
+      - name: Install RPM and Xvfb
         run: |
           RPM=$(find dist -name 'claude-desktop-*.x86_64.rpm' ! -name '*.src.rpm' | head -1)
           echo "Installing: ${RPM}"
-          dnf install -y "${RPM}"
+          dnf install -y "${RPM}" xorg-x11-server-Xvfb
 
-      - name: Smoke test
+      - name: Install smoke test (file/binary checks — no display needed)
         run: |
           chmod +x tests/smoke/install-smoke.sh
           tests/smoke/install-smoke.sh
+
+      - name: Launch smoke test (startup check via Xvfb)
+        run: |
+          chmod +x tests/smoke/launch-smoke.sh
+          LAUNCH_TIMEOUT=15 tests/smoke/launch-smoke.sh
 
       - name: Validate spec files
         run: |
