@@ -13,27 +13,33 @@ Examples:
 
 ## Releasing a new upstream version
 
-When the [scheduled check](.github/workflows/scheduled-check.yml) opens an issue saying
-a new upstream version is available:
+When a new upstream version is available:
 
 ```bash
 # 1. Pull latest main
 git checkout main && git pull
 
-# 2. Test build locally
+# 2. Place the Windows installer in the repo root
+# Example filename:
+#   Claude Setup.exe
+
+# 3. Test build locally
 ./packaging/scripts/build-rpm.sh
 
-# 3. Smoke test
+# 4. Smoke test
 sudo dnf install ./dist/claude-desktop-X.Y.Z-1.x86_64.rpm
 ./tests/smoke/install-smoke.sh
 
-# 4. If everything works, tag
+# 5. If everything works, tag
 git tag v X.Y.Z-packaging.1
 git push origin vX.Y.Z-packaging.1
+
+# 6. Publish from your machine
+./packaging/scripts/publish-release.sh "vX.Y.Z-packaging.1" 1
 ```
 
-The `release.yml` workflow fires automatically, builds the RPM in CI, and publishes
-the GitHub Release with all artifacts and checksums.
+GitHub-hosted runners can no longer reliably download the Claude installer, so the
+actual packaging and release publishing are done locally.
 
 ## Releasing a packaging fix (same upstream version)
 
@@ -47,13 +53,13 @@ git push origin vX.Y.Z-packaging.2
 
 ## Manually triggering a build
 
-For testing without tagging:
-1. Go to Actions → Build RPM → Run workflow
-2. Optionally specify a version
+For testing without tagging, run the build locally:
 
-The artifact will be downloadable from the workflow run but won't create a Release.
+```bash
+./packaging/scripts/build-rpm.sh
+```
 
-## What CI produces per release
+## What local release publishing produces
 
 | Artifact | Description |
 |----------|-------------|
@@ -65,7 +71,7 @@ The artifact will be downloadable from the workflow run but won't create a Relea
 
 ## Updating the Fedora version
 
-The CI container is `fedora:42`. To update:
-1. Edit the `image:` field in `.github/workflows/build-rpm.yml` and `release.yml`
+The validation CI container is `fedora:42`. To update:
+1. Edit the `image:` field in `.github/workflows/build-rpm.yml`
 2. Update the `Fedora version` reference in `generate-release-notes.sh`
-3. Test a build
+3. Test a local build

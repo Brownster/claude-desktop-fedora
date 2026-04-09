@@ -109,9 +109,10 @@ independently verify that the packaged app matches what Anthropic distributed.
 
 When a new upstream Claude version is available:
 
-1. The [scheduled check](.github/workflows/scheduled-check.yml) opens a GitHub issue automatically
-2. Tag a new release: `git tag v0.10.14-packaging.1 && git push --tags`
-3. CI builds and publishes the RPM automatically
+1. Download the latest Windows installer EXE locally
+2. Build locally from that EXE
+3. Tag a new release: `git tag v0.10.14-packaging.1 && git push --tags`
+4. Publish the built artifacts from your machine with `packaging/scripts/publish-release.sh`
 
 ## Troubleshooting
 

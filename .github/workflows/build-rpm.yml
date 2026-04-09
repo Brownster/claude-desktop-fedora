@@ -9,12 +9,6 @@ on:
       - 'LICENSE'
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      rpm_release:
-        description: 'RPM release number'
-        required: false
-        default: '1'
 
 jobs:
   # ----------------------------------------------------------------
@@ -27,7 +21,7 @@ jobs:
       image: fedora:42
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install lint tools
         run: dnf install -y --setopt=install_weak_deps=False shellcheck rpmlint
@@ -47,134 +41,3 @@ jobs:
         run: |
           dnf install -y --setopt=install_weak_deps=False desktop-file-utils
           desktop-file-validate packaging/fedora/claude-desktop.desktop
-
-  # ----------------------------------------------------------------
-  # Build: full pipeline in Fedora container
-  # ----------------------------------------------------------------
-  build-rpm:
-    name: Build RPM (Fedora 42)
-    runs-on: ubuntu-latest
-    needs: lint
-    container:
-      image: fedora:42
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          dnf install -y --setopt=install_weak_deps=False \
-            git curl jq unzip \
-            p7zip p7zip-plugins \
-            rpm-build rpmdevtools \
-            desktop-file-utils \
-            file which tar xz \
-            nodejs npm \
-            python3 \
-            bubblewrap \
-            rsync \
-            libicu \
-            ca-certificates
-
-      - name: Make scripts executable
-        run: chmod +x packaging/scripts/*.sh tests/**/*.sh
-
-      - name: Download upstream installer
-        run: packaging/scripts/download-upstream.sh
-
-      - name: Extract Windows installer
-        id: extract
-        run: |
-          VERSION=$(packaging/scripts/extract-windows.sh | tail -1)
-          if [ -z "${VERSION}" ]; then
-            echo "ERROR: extract-windows.sh did not output a version" >&2
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Detected version: ${VERSION}"
-
-      - name: Patch Linux runtime
-        run: packaging/scripts/patch-linux-runtime.sh "${{ steps.extract.outputs.version }}"
-
-      - name: Create source tarball
-        run: packaging/scripts/make-source-tarball.sh "${{ steps.extract.outputs.version }}"
-
-      - name: Build RPM
-        env:
-          RPM_RELEASE: ${{ github.event.inputs.rpm_release || '1' }}
-        run: |
-          packaging/scripts/build-rpm.sh \
-            --release "${RPM_RELEASE}" \
-            --skip-download \
-            --skip-extract
-
-      - name: Verify RPM
-        run: |
-          packaging/scripts/verify-artifact.sh \
-            "$(find dist -name 'claude-desktop-*.x86_64.rpm' ! -name '*.src.rpm' | head -1)"
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum *.rpm > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: claude-desktop-rpm-${{ steps.extract.outputs.version }}
-          path: |
-            dist/*.rpm
-            dist/SHA256SUMS
-          retention-days: 30
-
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-${{ steps.extract.outputs.version }}
-          path: |
-            work/upstream/upstream.json
-            work/extract.json
-            work/patch-manifest.json
-          retention-days: 7
-
-  # ----------------------------------------------------------------
-  # Smoke test: install the RPM into a fresh Fedora container
-  # ----------------------------------------------------------------
-  smoke-test:
-    name: Smoke test (install + validate)
-    runs-on: ubuntu-latest
-    needs: build-rpm
-    container:
-      image: fedora:42
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download RPM artifact
-        uses: actions/download-artifact@v4
-        with:
-          pattern: claude-desktop-rpm-*
-          path: dist
-
-      - name: Install RPM and Xvfb
-        run: |
-          RPM=$(find dist -name 'claude-desktop-*.x86_64.rpm' ! -name '*.src.rpm' | head -1)
-          echo "Installing: ${RPM}"
-          dnf install -y "${RPM}" xorg-x11-server-Xvfb
-
-      - name: Install smoke test (file/binary checks — no display needed)
-        run: |
-          chmod +x tests/smoke/install-smoke.sh
-          tests/smoke/install-smoke.sh
-
-      - name: Launch smoke test (startup check via Xvfb)
-        run: |
-          chmod +x tests/smoke/launch-smoke.sh
-          LAUNCH_TIMEOUT=15 tests/smoke/launch-smoke.sh
-
-      - name: Validate spec files
-        run: |
-          chmod +x tests/spec/validate-spec.sh
-          tests/spec/validate-spec.sh

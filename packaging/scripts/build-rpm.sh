@@ -4,8 +4,8 @@
 # Runs: download → extract → patch → tarball → rpmbuild
 # Outputs: dist/claude-desktop-<version>-1.x86_64.rpm
 #
-# Usage: ./build-rpm.sh [--skip-download] [--skip-extract] [--release N]
-# Env:   WORK_DIR, RPM_RELEASE
+# Usage: ./build-rpm.sh [--skip-download] [--skip-extract] [--release N] [--installer /path/to/installer.exe]
+# Env:   WORK_DIR, RPM_RELEASE, UPSTREAM_FILE
 
 set -euo pipefail
 
@@ -16,6 +16,7 @@ DIST_DIR="${REPO_ROOT}/dist"
 FEDORA_PKG_DIR="${REPO_ROOT}/packaging/fedora"
 SPEC_FILE="${FEDORA_PKG_DIR}/claude-desktop.spec"
 RPM_RELEASE="${RPM_RELEASE:-1}"
+UPSTREAM_FILE="${UPSTREAM_FILE:-}"
 
 SKIP_DOWNLOAD=0
 SKIP_EXTRACT=0
@@ -28,6 +29,7 @@ step() { printf '[build-rpm] %s\n' "$*" >&2; }
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release)       RPM_RELEASE="$2"; shift 2 ;;
+        --installer)     UPSTREAM_FILE="$2"; shift 2 ;;
         --skip-download) SKIP_DOWNLOAD=1; shift ;;
         --skip-extract)  SKIP_EXTRACT=1; shift ;;
         --help|-h)
@@ -36,6 +38,7 @@ Usage: build-rpm.sh [OPTIONS]
 
 Options:
   --release N        RPM release number (default: 1)
+  --installer PATH   Use a local Windows installer instead of downloading it
   --skip-download    Skip downloading upstream installer
   --skip-extract     Skip extracting the installer
   -h, --help         Show this help
@@ -43,6 +46,7 @@ Options:
 Environment:
   WORK_DIR           Working directory (default: <repo>/work)
   RPM_RELEASE        RPM release number (default: 1)
+  UPSTREAM_FILE      Local Windows installer path
 EOF
             exit 0
             ;;
@@ -70,7 +74,11 @@ log "Step 1: Download upstream installer"
 if [[ "${SKIP_DOWNLOAD}" == "1" ]]; then
     step "Skipping download (--skip-download)"
 else
-    "${SCRIPT_DIR}/download-upstream.sh"
+    if [[ -n "${UPSTREAM_FILE}" ]]; then
+        "${SCRIPT_DIR}/download-upstream.sh" --file "${UPSTREAM_FILE}"
+    else
+        "${SCRIPT_DIR}/download-upstream.sh"
+    fi
 fi
 
 # --- step 2: extract (version detected here, not from download) ---

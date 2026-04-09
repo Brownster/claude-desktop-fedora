@@ -10,14 +10,14 @@ Installing this package means trusting several parties and components:
 | Windows installer source | `claude.ai` (Anthropic CDN) | Official vendor endpoint |
 | Linux native bindings | `aaddrick/claude-desktop-debian` | Third-party open-source project |
 | Build pipeline scripts | This repo | You can read and verify all code |
-| CI/CD runner | GitHub Actions | GitHub's infrastructure |
+| CI validation runner | GitHub Actions | GitHub's infrastructure |
 
 ## What we do to establish trust
 
 - **Source URL**: Always downloaded from the official `claude.ai` API endpoint
 - **SHA256 recorded**: The upstream installer hash is captured and published in `build-metadata.json` with every release
 - **Transparent patching**: All modifications are in `packaging/scripts/patch-linux-runtime.sh` — readable in full
-- **CI logs public**: Build logs are visible in GitHub Actions for every release
+- **CI logs public**: Validation logs are visible in GitHub Actions for push and pull request checks
 - **SRPM included**: Source RPM shipped alongside binary RPM so anyone can rebuild
 
 ## What this package does NOT do
@@ -53,9 +53,8 @@ You should verify the provenance of that module is acceptable to you.
 ## Verification steps for paranoid users
 
 ```bash
-# 1. Check the upstream installer hash matches what Anthropic serves
-curl -sI -L https://claude.ai/api/desktop/win32/x64/setup/latest/redirect | grep -i location
-# Download the EXE yourself and compute: sha256sum Claude-*.exe
+# 1. Check the upstream installer hash matches the EXE you built from
+# Compute: sha256sum Claude-*.exe
 # Compare against build-metadata.json in the release
 
 # 2. Verify the RPM checksum
