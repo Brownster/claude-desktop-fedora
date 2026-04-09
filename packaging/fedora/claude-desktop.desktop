@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Claude
+GenericName=AI Assistant
+Comment=Claude AI Desktop (unofficial Fedora build)
+Exec=/usr/bin/claude-desktop %U
+Icon=claude-desktop
+Terminal=false
+Type=Application
+Categories=Network;Chat;Office;
+MimeType=x-scheme-handler/claude;
+StartupNotify=true
+StartupWMClass=Claude
+Keywords=AI;assistant;anthropic;claude;chat;

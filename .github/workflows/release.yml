@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'     # e.g. v0.10.14-packaging.1
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.10.14-packaging.1)'
+        required: true
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create GitHub Release
+    container:
+      image: fedora:42
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for changelog
+
+      - name: Parse version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          # Strip leading 'v' and trailing '-packaging.N'
+          UPSTREAM=$(echo "${TAG}" | sed 's/^v//' | sed 's/-packaging\.[0-9]*$//')
+          RPM_REL=$(echo "${TAG}" | grep -oP 'packaging\.\K[0-9]+' || echo "1")
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "rpm_release=${RPM_REL}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Upstream: ${UPSTREAM}, RPM release: ${RPM_REL}"
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git curl jq \
+            p7zip p7zip-plugins \
+            rpm-build rpmdevtools \
+            desktop-file-utils \
+            file which tar xz \
+            nodejs npm \
+            python3 \
+            bubblewrap \
+            rsync \
+            libicu \
+            ca-certificates \
+            gh
+
+      - name: Make scripts executable
+        run: chmod +x packaging/scripts/*.sh
+
+      - name: Full build pipeline
+        env:
+          VERSION: ${{ steps.version.outputs.upstream }}
+          RPM_RELEASE: ${{ steps.version.outputs.rpm_release }}
+        run: |
+          packaging/scripts/build-rpm.sh \
+            --version "${VERSION}" \
+            --release "${RPM_RELEASE}"
+
+      - name: Verify RPM
+        run: |
+          packaging/scripts/verify-artifact.sh \
+            "$(find dist -name 'claude-desktop-*.x86_64.rpm' ! -name '*.src.rpm' | head -1)"
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.rpm > SHA256SUMS
+          # Individual .sha256 files per RPM for easy per-file verification
+          for f in *.rpm; do
+            sha256sum "${f}" > "${f}.sha256"
+          done
+          cat SHA256SUMS
+
+      - name: Write build metadata JSON
+        run: |
+          packaging/scripts/generate-release-notes.sh \
+            "${{ steps.version.outputs.upstream }}" \
+            "${{ steps.version.outputs.rpm_release }}" > /tmp/release-notes.md
+
+          python3 - <<EOF
+          import json, subprocess, os
+
+          meta = {
+            "upstream_version": "${{ steps.version.outputs.upstream }}",
+            "rpm_release": "${{ steps.version.outputs.rpm_release }}",
+            "tag": "${{ steps.version.outputs.tag }}",
+            "git_commit": subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(),
+            "built_at": subprocess.check_output(['date','-u','+%Y-%m-%dT%H:%M:%SZ']).decode().strip(),
+            "fedora_version": "42",
+            "builder": "claude-desktop-fedora CI"
+          }
+          with open("dist/build-metadata.json", "w") as f:
+              json.dump(meta, f, indent=2)
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          UPSTREAM="${{ steps.version.outputs.upstream }}"
+
+          gh release create "${TAG}" \
+            --title "Claude Desktop ${UPSTREAM} (Fedora)" \
+            --notes-file /tmp/release-notes.md \
+            --verify-tag \
+            dist/claude-desktop-*.rpm \
+            dist/claude-desktop-*.rpm.sha256 \
+            dist/SHA256SUMS \
+            dist/build-metadata.json

@@ -1,0 +1,140 @@
+name: Upstream version check
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # Daily at 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-upstream:
+    name: Check for new Claude Desktop release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect latest upstream version
+        id: upstream
+        run: |
+          UPSTREAM_URL="https://claude.ai/api/desktop/win32/x64/setup/latest/redirect"
+          FINAL_URL=$(curl -sI -L --max-redirs 10 "${UPSTREAM_URL}" -o /dev/null -w '%{url_effective}')
+          VERSION=$(echo "${FINAL_URL}" | grep -oP '\d+\.\d+\.\d+' | head -1 || true)
+          if [ -z "${VERSION}" ]; then
+            echo "Could not detect upstream version" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "url=${FINAL_URL}" >> "$GITHUB_OUTPUT"
+          echo "Detected upstream version: ${VERSION}"
+
+      - name: Read latest packaged version
+        id: packaged
+        run: |
+          # Latest packaged version is the most recent tag matching v*.*.* pattern
+          PACKAGED=$(git tag -l 'v*' | sort -V | tail -1 | sed 's/^v//' | sed 's/-packaging\.[0-9]*$//' || echo "0.0.0")
+          echo "version=${PACKAGED}" >> "$GITHUB_OUTPUT"
+          echo "Latest packaged version: ${PACKAGED}"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          UPSTREAM="${{ steps.upstream.outputs.version }}"
+          PACKAGED="${{ steps.packaged.outputs.version }}"
+
+          # Python semver comparison
+          python3 - "${UPSTREAM}" "${PACKAGED}" <<'EOF'
+          import sys
+          def parse(v):
+              return tuple(int(x) for x in v.split('.'))
+          upstream = parse(sys.argv[1])
+          packaged = parse(sys.argv[2])
+          if upstream > packaged:
+              print("NEW_VERSION=true")
+          else:
+              print("NEW_VERSION=false")
+          EOF
+
+          if python3 -c "
+          import sys
+          def parse(v): return tuple(int(x) for x in v.split('.'))
+          sys.exit(0 if parse('${UPSTREAM}') > parse('${PACKAGED}') else 1)
+          "; then
+            echo "new_version=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream version ${UPSTREAM} > packaged ${PACKAGED}"
+          else
+            echo "new_version=false" >> "$GITHUB_OUTPUT"
+            echo "No new version. Upstream=${UPSTREAM}, Packaged=${PACKAGED}"
+          fi
+
+      - name: Open issue for new upstream version
+        if: steps.compare.outputs.new_version == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const upstream = '${{ steps.upstream.outputs.version }}';
+            const packaged = '${{ steps.packaged.outputs.version }}';
+            const url = '${{ steps.upstream.outputs.url }}';
+
+            // Check if issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'upstream-update'
+            });
+
+            const existing = issues.data.find(i => i.title.includes(upstream));
+            if (existing) {
+              console.log(`Issue already exists: #${existing.number}`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `New upstream: Claude Desktop ${upstream}`,
+              body: [
+                `## New upstream version detected`,
+                ``,
+                `| | Version |`,
+                `|---|---|`,
+                `| Upstream (new) | \`${upstream}\` |`,
+                `| Last packaged  | \`${packaged}\` |`,
+                ``,
+                `**Upstream URL:** ${url}`,
+                ``,
+                `### To release:`,
+                ``,
+                '```bash',
+                `# Test build locally`,
+                `./packaging/scripts/build-rpm.sh --version ${upstream}`,
+                ``,
+                `# If good, tag the release`,
+                `git tag v${upstream}-packaging.1`,
+                `git push origin v${upstream}-packaging.1`,
+                '```',
+                ``,
+                `The release workflow will automatically build and publish the RPM.`,
+                ``,
+                `---`,
+                `_Opened automatically by scheduled upstream check_`
+              ].join('\n'),
+              labels: ['upstream-update']
+            });
+            console.log(`Created issue for ${upstream}`);
+
+      - name: Summary
+        run: |
+          echo "## Upstream Check Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Upstream version | \`${{ steps.upstream.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Packaged version | \`${{ steps.packaged.outputs.version }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| New version found | ${{ steps.compare.outputs.new_version }} |" >> "$GITHUB_STEP_SUMMARY"

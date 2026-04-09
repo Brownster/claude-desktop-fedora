@@ -1,0 +1,21 @@
+# Build outputs
+dist/
+work/
+
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# rpmbuild
+*.rpm
+*.src.rpm
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
