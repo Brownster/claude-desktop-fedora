@@ -87,13 +87,19 @@ jobs:
             dist/SHA256SUMS
           retention-days: 7
 
+      - name: Upload upstream provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-provenance-${{ steps.version.outputs.upstream }}
+          path: work/upstream/upstream.json
+          retention-days: 7
+
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-build-logs-${{ steps.version.outputs.upstream }}
           path: |
-            work/upstream/upstream.json
             work/extract.json
             work/patch-manifest.json
           retention-days: 7
@@ -151,8 +157,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install gh CLI
-        run: dnf install -y --setopt=install_weak_deps=False gh
+      - name: Install tools
+        run: dnf install -y --setopt=install_weak_deps=False gh jq
 
       - name: Download RPM artifact
         uses: actions/download-artifact@v4
@@ -160,52 +166,58 @@ jobs:
           name: release-rpm-${{ needs.build.outputs.upstream }}
           path: dist
 
-      - name: Download build logs
+      - name: Download upstream provenance
         uses: actions/download-artifact@v4
         with:
-          name: release-build-logs-${{ needs.build.outputs.upstream }}
-          path: work-logs
+          name: upstream-provenance-${{ needs.build.outputs.upstream }}
+          path: work/upstream
 
       - name: Generate release notes
         run: |
           chmod +x packaging/scripts/generate-release-notes.sh
-          # Restore upstream.json for release notes script
-          mkdir -p work/upstream
-          cp work-logs/upstream/upstream.json work/upstream/ 2>/dev/null || true
           packaging/scripts/generate-release-notes.sh \
             "${{ needs.build.outputs.upstream }}" \
             "${{ needs.build.outputs.rpm_release }}" > /tmp/release-notes.md
 
-      - name: Enrich build-metadata.json with upstream provenance
+      - name: Write build-metadata.json with full upstream provenance
         run: |
-          python3 - <<'PYEOF'
-          import json, os, subprocess
+          # Read provenance fields from the upstream.json captured during the build
+          UPSTREAM_JSON="work/upstream/upstream.json"
+          if [[ ! -f "${UPSTREAM_JSON}" ]]; then
+            echo "ERROR: upstream.json not found at ${UPSTREAM_JSON}" >&2
+            exit 1
+          fi
+          UPSTREAM_URL=$(jq -r '.source_url // ""' "${UPSTREAM_JSON}")
+          UPSTREAM_SHA256=$(jq -r '.sha256 // ""' "${UPSTREAM_JSON}")
+          UPSTREAM_DOWNLOADED=$(jq -r '.downloaded_at // ""' "${UPSTREAM_JSON}")
+          GIT_COMMIT=$(git rev-parse HEAD)
+          BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          # Read upstream provenance captured during the build
-          upstream_json_path = "work/upstream/upstream.json"
-          upstream = {}
-          if os.path.exists(upstream_json_path):
-              with open(upstream_json_path) as f:
-                  upstream = json.load(f)
-
-          meta = {
-            "upstream_version": "${{ needs.build.outputs.upstream }}",
-            "upstream_source_url": upstream.get("source_url", ""),
-            "upstream_installer_sha256": upstream.get("sha256", ""),
-            "upstream_downloaded_at": upstream.get("downloaded_at", ""),
-            "rpm_release": "${{ needs.build.outputs.rpm_release }}",
-            "tag": "${{ needs.build.outputs.tag }}",
-            "git_commit": subprocess.check_output(["git","rev-parse","HEAD"]).decode().strip(),
-            "fedora_version": "42",
-            "built_at": subprocess.check_output(["date","-u","+%Y-%m-%dT%H:%M:%SZ"]).decode().strip(),
-            "builder": "claude-desktop-fedora CI"
-          }
-          os.makedirs("dist", exist_ok=True)
-          with open("dist/build-metadata.json", "w") as f:
-              json.dump(meta, f, indent=2)
-              f.write("\n")
-          print("build-metadata.json written with upstream provenance.")
-          PYEOF
+          jq -n \
+            --arg upstream_version "${{ needs.build.outputs.upstream }}" \
+            --arg upstream_source_url "${UPSTREAM_URL}" \
+            --arg upstream_installer_sha256 "${UPSTREAM_SHA256}" \
+            --arg upstream_downloaded_at "${UPSTREAM_DOWNLOADED}" \
+            --arg rpm_release "${{ needs.build.outputs.rpm_release }}" \
+            --arg tag "${{ needs.build.outputs.tag }}" \
+            --arg git_commit "${GIT_COMMIT}" \
+            --arg fedora_version "42" \
+            --arg built_at "${BUILT_AT}" \
+            --arg builder "claude-desktop-fedora CI" \
+            '{
+              upstream_version: $upstream_version,
+              upstream_source_url: $upstream_source_url,
+              upstream_installer_sha256: $upstream_installer_sha256,
+              upstream_downloaded_at: $upstream_downloaded_at,
+              rpm_release: $rpm_release,
+              tag: $tag,
+              git_commit: $git_commit,
+              fedora_version: $fedora_version,
+              built_at: $built_at,
+              builder: $builder
+            }' > dist/build-metadata.json
+          echo "build-metadata.json:"
+          cat dist/build-metadata.json
 
       - name: Create GitHub Release
         env:

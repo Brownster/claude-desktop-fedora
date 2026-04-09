@@ -47,7 +47,7 @@ sudo dnf install claude-desktop
 ```bash
 # Install build prerequisites
 sudo dnf install -y \
-  git curl jq \
+  git curl jq unzip \
   p7zip p7zip-plugins \
   rpm-build rpmdevtools \
   desktop-file-utils \

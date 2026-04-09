@@ -169,15 +169,11 @@ else
 import json, sys
 data = json.load(sys.stdin)
 target = sys.argv[1]
+# Exact filename match only — do not fall back to 'any .node file'
+# because copying the wrong module silently produces a broken build
 for a in data.get('assets', []):
     name = a['name']
-    # Match by exact filename or by stripping platform prefix
     if name == target or name.endswith('_' + target) or name.endswith('-' + target):
-        print(a['browser_download_url'])
-        sys.exit(0)
-# Looser match: any .node file
-for a in data.get('assets', []):
-    if a['name'].endswith('.node'):
         print(a['browser_download_url'])
         sys.exit(0)
 " "${mod_name}" 2>/dev/null || true)
